@@ -340,7 +340,7 @@ def gen_session():
     return secrets.token_urlsafe(32)
 
 def gen_license():
-    return "OXCY-" + secrets.token_hex(8).upper()
+    return "AuthGuard-" + secrets.token_hex(8).upper()
 
 def gen_owner_id():
     return secrets.token_hex(5).upper()
