@@ -110,7 +110,7 @@ class GenerateLicenseRequest(BaseModel):
 # ----------------- CORS -----------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https://AuthGuard\.netlify\.app|http://localhost.*|http://127\.0\.0\.1.*",
+    allow_origin_regex=r"https://authshield\.netlify\.app|http://localhost.*|http://127\.0\.0\.1.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
