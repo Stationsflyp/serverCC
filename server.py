@@ -400,6 +400,21 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_locations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            ip TEXT NOT NULL,
+            latitude REAL,
+            longitude REAL,
+            country TEXT,
+            city TEXT,
+            timestamp TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
     cur.execute("SELECT COUNT(*) FROM config WHERE key='app_version'")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO config (key, value) VALUES ('app_version', '1.1')") 
@@ -2362,6 +2377,140 @@ async def websocket_endpoint(websocket: WebSocket):
             })
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+# --------- USER LOCATIONS (WORLD MAP) ---------
+def get_geo_from_ip(ip: str):
+    try:
+        response = requests.get(f"http://ip-api.com/json/{ip}?fields=lat,lon,country,city,status", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == "success":
+                return {
+                    "latitude": data.get("lat"),
+                    "longitude": data.get("lon"),
+                    "country": data.get("country"),
+                    "city": data.get("city")
+                }
+    except:
+        pass
+    return None
+
+@app.post("/api/location/register")
+async def register_user_location(request: Request):
+    try:
+        body = await request.json()
+        user_id = body.get("user_id")
+        username = body.get("username")
+        
+        if not user_id or not username:
+            return {"status": "error", "message": "Missing user_id or username"}
+        
+        client_ip = request.client.host
+        if client_ip.startswith("127.") or client_ip == "localhost":
+            client_ip = request.headers.get("x-forwarded-for", client_ip).split(",")[0].strip()
+        
+        geo_data = get_geo_from_ip(client_ip)
+        
+        con = db()
+        cur = con.cursor()
+        
+        timestamp = datetime.datetime.utcnow().isoformat()
+        
+        cur.execute("""
+            INSERT INTO user_locations (user_id, username, ip, latitude, longitude, country, city, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id,
+            username,
+            client_ip,
+            geo_data.get("latitude") if geo_data else None,
+            geo_data.get("longitude") if geo_data else None,
+            geo_data.get("country") if geo_data else "Unknown",
+            geo_data.get("city") if geo_data else "Unknown",
+            timestamp
+        ))
+        
+        con.commit()
+        con.close()
+        
+        return {"status": "success", "message": "Location registered"}
+    except Exception as e:
+        print(f"Error registering location: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/location/users")
+async def get_user_locations():
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute("""
+            SELECT user_id, username, latitude, longitude, country, city, timestamp 
+            FROM user_locations 
+            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+            ORDER BY timestamp DESC
+            LIMIT 500
+        """)
+        
+        results = cur.fetchall()
+        con.close()
+        
+        locations = []
+        for row in results:
+            locations.append({
+                "user_id": row[0],
+                "username": row[1],
+                "latitude": row[2],
+                "longitude": row[3],
+                "country": row[4],
+                "city": row[5],
+                "timestamp": row[6]
+            })
+        
+        return {"status": "success", "locations": locations}
+    except Exception as e:
+        print(f"Error fetching locations: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/admin/user-locations")
+async def get_admin_user_locations(owner_id: str, secret: str):
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute("SELECT secret FROM users WHERE owner_id=? AND is_admin=1 LIMIT 1", (owner_id,))
+        admin = cur.fetchone()
+        
+        if not admin or admin[0] != secret:
+            con.close()
+            return {"success": False, "message": "Unauthorized"}
+        
+        cur.execute("""
+            SELECT ul.username, ul.latitude, ul.longitude, ul.country, ul.city, ul.timestamp
+            FROM user_locations ul
+            WHERE ul.user_id IN (SELECT id FROM users WHERE owner_id=?)
+            AND ul.latitude IS NOT NULL AND ul.longitude IS NOT NULL
+            ORDER BY ul.timestamp DESC LIMIT 500
+        """, (owner_id,))
+        
+        results = cur.fetchall()
+        con.close()
+        
+        users = []
+        for row in results:
+            users.append({
+                "username": row[0],
+                "latitude": row[1],
+                "longitude": row[2],
+                "country": row[3],
+                "city": row[4],
+                "timestamp": row[5]
+            })
+        
+        return {"success": True, "users": users}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
 
 @app.get("/index.html")
 @app.get("/")
