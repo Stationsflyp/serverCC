@@ -595,7 +595,7 @@ def register(data: UserCreate):
         raise HTTPException(500, "Error al registrar usuario")
 
 @app.post("/api/register_with_license")
-def register_with_license(data: RegisterWithLicenseRequest):
+def register_with_license(data: RegisterWithLicenseRequest, request: Request):
     if not validate_username(data.username):
         raise HTTPException(400, "Usuario inválido")
     
@@ -606,6 +606,8 @@ def register_with_license(data: RegisterWithLicenseRequest):
     try:
         con = db()
         cur = con.cursor()
+        
+        client_ip = request.client.host if request.client else "unknown"
         
         cur.execute(
             "SELECT id, hwid, expires, owner_id FROM licenses WHERE license_key=?",
@@ -639,6 +641,11 @@ def register_with_license(data: RegisterWithLicenseRequest):
             (data.username, sha256(data.password), owner_id, data.hwid)
         )
         con.commit()
+        
+        cur.execute("SELECT id FROM users WHERE username=? AND owner_id=?", (data.username, owner_id))
+        user_row = cur.fetchone()
+        if user_row:
+            register_user_location_internal(str(user_row[0]), data.username, client_ip)
         
         return {
             "success": True,
@@ -1389,6 +1396,9 @@ def login(data: LoginRequest, request: Request):
             "UPDATE users SET hwid=?, ip=?, last_login=? WHERE id=?",
             (data.hwid, client_ip, datetime.datetime.utcnow().isoformat(), u[0])
         )
+        con.commit()
+
+        register_user_location_internal(str(u[0]), data.username, client_ip)
 
         return {"success": True, "message": "Logged in"}
     finally:
@@ -1773,6 +1783,48 @@ def client_delete_user(user_id: int, data: ClientRequest):
         if con:
             con.close()
 
+@app.post("/api/client/delete_all_users")
+def client_delete_all_users(data: ClientRequest):
+    is_valid, auth_result = verify_client(data.owner_id, data.secret)
+    if not is_valid:
+        return {"success": False, "message": "Acceso denegado"}
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute("DELETE FROM users WHERE owner_id=? AND is_admin=0", (data.owner_id,))
+        deleted = cur.rowcount
+        con.commit()
+        return {"success": True, "message": f"Deleted {deleted} users", "count": deleted}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/client/pause_all_users")
+def client_pause_all_users(data: ClientRequest):
+    is_valid, auth_result = verify_client(data.owner_id, data.secret)
+    if not is_valid:
+        return {"success": False, "message": "Acceso denegado"}
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute("UPDATE users SET force_logout=1 WHERE owner_id=? AND is_admin=0", (data.owner_id,))
+        paused = cur.rowcount
+        con.commit()
+        return {"success": True, "message": f"Paused {paused} users", "count": paused}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
 @app.post("/api/client/update_user/{user_id}")
 def client_update_user(user_id: int, data: ClientCreateUser):
     is_valid, auth_result = verify_client(data.owner_id, data.secret)
@@ -2013,6 +2065,27 @@ def client_delete_license(license_id: int, data: ClientRequest):
         cur.execute("DELETE FROM licenses WHERE id=?", (license_id,))
         con.commit()
         return {"success": True, "message": "License deleted"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/client/delete_all_licenses")
+def client_delete_all_licenses(data: ClientRequest):
+    is_valid, auth_result = verify_client(data.owner_id, data.secret)
+    if not is_valid:
+        return {"success": False, "message": "Acceso denegado"}
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute("DELETE FROM licenses WHERE owner_id=?", (data.owner_id,))
+        deleted = cur.rowcount
+        con.commit()
+        return {"success": True, "message": f"Deleted {deleted} licenses", "count": deleted}
     except Exception as e:
         return {"success": False, "message": str(e)}
     finally:
@@ -2394,6 +2467,35 @@ def get_geo_from_ip(ip: str):
     except:
         pass
     return None
+
+def register_user_location_internal(user_id: str, username: str, ip: str):
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        geo_data = get_geo_from_ip(ip)
+        timestamp = datetime.datetime.utcnow().isoformat()
+        
+        cur.execute("""
+            INSERT INTO user_locations (user_id, username, ip, latitude, longitude, country, city, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id,
+            username,
+            ip,
+            geo_data.get("latitude") if geo_data else None,
+            geo_data.get("longitude") if geo_data else None,
+            geo_data.get("country") if geo_data else "Unknown",
+            geo_data.get("city") if geo_data else "Unknown",
+            timestamp
+        ))
+        
+        con.commit()
+        con.close()
+        return True
+    except Exception as e:
+        print(f"Error registering user location: {e}")
+        return False
 
 @app.post("/api/location/register")
 async def register_user_location(request: Request):
