@@ -348,6 +348,58 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id TEXT UNIQUE NOT NULL,
+            tier TEXT DEFAULT 'free',
+            status TEXT DEFAULT 'inactive',
+            payment_id TEXT,
+            expires_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS team_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id TEXT NOT NULL,
+            invited_email TEXT NOT NULL,
+            username TEXT,
+            role TEXT DEFAULT 'user',
+            permissions TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            UNIQUE(owner_id, invited_email)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS usage_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id TEXT NOT NULL,
+            exe_name TEXT,
+            hwid TEXT,
+            country TEXT,
+            ip TEXT,
+            timestamp TEXT NOT NULL,
+            action TEXT
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS webhook_configs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id TEXT UNIQUE NOT NULL,
+            discord_webhook_url TEXT,
+            enabled INTEGER DEFAULT 0,
+            log_anticracks INTEGER DEFAULT 1,
+            log_exe_launch INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL
+        )
+    """)
+
     cur.execute("SELECT COUNT(*) FROM config WHERE key='app_version'")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO config (key, value) VALUES ('app_version', '1.1')") 
@@ -1969,6 +2021,300 @@ def get_chat_history():
 
 def count_words(text: str) -> int:
     return len(text.split())
+
+@app.get("/api/premium/subscription")
+def get_subscription(owner_id: str = None, secret: str = None):
+    is_valid, auth_result = verify_client(owner_id, secret)
+    if not is_valid:
+        raise HTTPException(401, "Acceso denegado")
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        cur.execute(
+            "SELECT tier, status, expires_at, created_at FROM subscriptions WHERE owner_id=? LIMIT 1",
+            (owner_id,)
+        )
+        sub = cur.fetchone()
+        
+        if sub:
+            return {
+                "success": True,
+                "subscription": {
+                    "tier": sub[0],
+                    "status": sub[1],
+                    "expires_at": sub[2],
+                    "created_at": sub[3]
+                }
+            }
+        return {"success": True, "subscription": {"tier": "free", "status": "inactive"}}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/premium/checkout")
+def checkout(data: dict):
+    owner_id = data.get("owner_id")
+    secret = data.get("secret")
+    
+    is_valid, auth_result = verify_client(owner_id, secret)
+    if not is_valid:
+        raise HTTPException(401, "Acceso denegado")
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute("SELECT email FROM users WHERE owner_id=? LIMIT 1", (owner_id,))
+        user = cur.fetchone()
+        
+        if not user:
+            return {"success": False, "message": "Usuario no encontrado"}
+        
+        checkout_id = secrets.token_urlsafe(16)
+        
+        cur.execute(
+            "INSERT OR REPLACE INTO subscriptions (owner_id, tier, status, payment_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (owner_id, "gold", "pending", checkout_id, datetime.datetime.utcnow().isoformat(), datetime.datetime.utcnow().isoformat())
+        )
+        con.commit()
+        
+        checkout_url = f"https://example.com/checkout?id={checkout_id}&email={user[0]}"
+        
+        return {
+            "success": True,
+            "checkout_url": checkout_url,
+            "message": "Redirigiendo al pago..."
+        }
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.get("/api/premium/analytics")
+def get_analytics(owner_id: str = None, secret: str = None):
+    is_valid, auth_result = verify_client(owner_id, secret)
+    if not is_valid:
+        raise HTTPException(401, "Acceso denegado")
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute("SELECT COUNT(*) FROM usage_logs WHERE owner_id=?", (owner_id,))
+        total_executions = cur.fetchone()[0] or 0
+        
+        cur.execute("SELECT COUNT(DISTINCT hwid) FROM usage_logs WHERE owner_id=?", (owner_id,))
+        unique_devices = cur.fetchone()[0] or 0
+        
+        cur.execute("SELECT country, COUNT(*) FROM usage_logs WHERE owner_id=? GROUP BY country", (owner_id,))
+        countries = {row[0]: row[1] for row in cur.fetchall() if row[0]}
+        
+        cur.execute(
+            "SELECT exe_name, hwid, country, timestamp FROM usage_logs WHERE owner_id=? ORDER BY timestamp DESC LIMIT 50",
+            (owner_id,)
+        )
+        recent = [{"exe_name": r[0], "hwid": r[1], "country": r[2], "timestamp": r[3]} for r in cur.fetchall()]
+        
+        return {
+            "success": True,
+            "analytics": {
+                "total_executions": total_executions,
+                "unique_devices": unique_devices,
+                "countries": countries,
+                "recent_executions": recent
+            }
+        }
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.get("/api/premium/team")
+def get_team_members(owner_id: str = None, secret: str = None):
+    is_valid, auth_result = verify_client(owner_id, secret)
+    if not is_valid:
+        raise HTTPException(401, "Acceso denegado")
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        cur.execute(
+            "SELECT id, invited_email, username, role, status, created_at FROM team_members WHERE owner_id=?",
+            (owner_id,)
+        )
+        members = [
+            {
+                "id": r[0],
+                "invited_email": r[1],
+                "username": r[2],
+                "role": r[3],
+                "status": r[4],
+                "created_at": r[5]
+            }
+            for r in cur.fetchall()
+        ]
+        return {"success": True, "members": members}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/premium/invite-member")
+def invite_member(data: dict):
+    owner_id = data.get("owner_id")
+    secret = data.get("secret")
+    invited_email = data.get("invited_email")
+    role = data.get("role", "viewer")
+    
+    is_valid, auth_result = verify_client(owner_id, secret)
+    if not is_valid:
+        raise HTTPException(401, "Acceso denegado")
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute(
+            "INSERT INTO team_members (owner_id, invited_email, role, status, created_at) VALUES (?, ?, ?, ?, ?)",
+            (owner_id, invited_email, role, "pending", datetime.datetime.utcnow().isoformat())
+        )
+        con.commit()
+        
+        return {"success": True, "message": f"Invitación enviada a {invited_email}"}
+    except sqlite3.IntegrityError:
+        return {"success": False, "message": "Este usuario ya ha sido invitado"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/premium/remove-member")
+def remove_member(data: dict):
+    owner_id = data.get("owner_id")
+    secret = data.get("secret")
+    member_id = data.get("member_id")
+    
+    is_valid, auth_result = verify_client(owner_id, secret)
+    if not is_valid:
+        raise HTTPException(401, "Acceso denegado")
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute(
+            "DELETE FROM team_members WHERE id=? AND owner_id=?",
+            (member_id, owner_id)
+        )
+        con.commit()
+        
+        return {"success": True, "message": "Miembro removido"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.get("/api/premium/webhook-config")
+def get_webhook_config(owner_id: str = None, secret: str = None):
+    is_valid, auth_result = verify_client(owner_id, secret)
+    if not is_valid:
+        raise HTTPException(401, "Acceso denegado")
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        cur.execute(
+            "SELECT discord_webhook_url, enabled, log_anticracks, log_exe_launch FROM webhook_configs WHERE owner_id=? LIMIT 1",
+            (owner_id,)
+        )
+        config = cur.fetchone()
+        
+        if config:
+            return {
+                "success": True,
+                "config": {
+                    "discord_webhook_url": config[0] or "",
+                    "enabled": bool(config[1]),
+                    "log_anticracks": bool(config[2]),
+                    "log_exe_launch": bool(config[3])
+                }
+            }
+        return {"success": True, "config": {"discord_webhook_url": "", "enabled": False, "log_anticracks": True, "log_exe_launch": True}}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/premium/webhook-config")
+def set_webhook_config(data: dict):
+    owner_id = data.get("owner_id")
+    secret = data.get("secret")
+    webhook_url = data.get("discord_webhook_url")
+    log_anticracks = data.get("log_anticracks", True)
+    log_exe_launch = data.get("log_exe_launch", True)
+    
+    is_valid, auth_result = verify_client(owner_id, secret)
+    if not is_valid:
+        raise HTTPException(401, "Acceso denegado")
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute(
+            "INSERT OR REPLACE INTO webhook_configs (owner_id, discord_webhook_url, enabled, log_anticracks, log_exe_launch, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (owner_id, webhook_url, 1 if webhook_url else 0, 1 if log_anticracks else 0, 1 if log_exe_launch else 0, datetime.datetime.utcnow().isoformat())
+        )
+        con.commit()
+        
+        return {"success": True, "message": "Webhook configurado"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/premium/test-webhook")
+def test_webhook(data: dict):
+    webhook_url = data.get("discord_webhook_url")
+    
+    if not webhook_url:
+        return {"success": False, "message": "URL de webhook requerida"}
+    
+    try:
+        test_payload = {
+            "content": "✅ Test de Webhook - OxcyShop",
+            "embeds": [{
+                "title": "Conexión Exitosa",
+                "description": "Tu webhook está funcionando correctamente",
+                "color": 3066993
+            }]
+        }
+        
+        response = requests.post(webhook_url, json=test_payload)
+        if response.status_code in [200, 204]:
+            return {"success": True, "message": "Webhook funcionando correctamente ✅"}
+        else:
+            return {"success": False, "message": f"Error: {response.status_code}"}
+    except Exception as e:
+        return {"success": False, "message": f"Error al probar webhook: {str(e)}"}
 
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
