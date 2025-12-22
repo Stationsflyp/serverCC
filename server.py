@@ -958,30 +958,34 @@ def discord_callback(data: DiscordCallbackRequest):
         WHITELIST_DISCORD_IDS = os.getenv("WHITELIST_DISCORD_IDS", "").strip()
         
         discord_id_str = str(discord_id)
+        is_owner = discord_id_str == DISCORD_OWNER_ID if DISCORD_OWNER_ID else False
         
-        if DISCORD_OWNER_ID:
-            cur.execute(
-                "SELECT id FROM discord_whitelist WHERE owner_id=? AND discord_id=? AND banned=0",
-                (DISCORD_OWNER_ID, discord_id_str)
-            )
-            whitelist_entry = cur.fetchone()
-            
-            if not whitelist_entry:
-                error_msg = f"❌ Tu Discord ID ({discord_id_str}) no está autorizado para acceder a esta aplicación. Solo usuarios seleccionados pueden ingresar."
-                print(f"[Discord OAuth] Whitelist check failed for Discord ID: {discord_id_str}")
-                if con:
-                    con.close()
-                return {"success": False, "message": error_msg}
-            print(f"[Discord OAuth] Discord ID {discord_id_str} is whitelisted ✓")
-        elif WHITELIST_DISCORD_IDS:
-            whitelist = [uid.strip() for uid in WHITELIST_DISCORD_IDS.split(",")]
-            if discord_id_str not in whitelist:
-                error_msg = f"❌ Tu Discord ID ({discord_id_str}) no está autorizado para acceder a esta aplicación. Solo usuarios seleccionados pueden ingresar."
-                print(f"[Discord OAuth] Whitelist check failed for Discord ID: {discord_id_str}")
-                if con:
-                    con.close()
-                return {"success": False, "message": error_msg}
-            print(f"[Discord OAuth] Discord ID {discord_id_str} is whitelisted ✓")
+        if not is_owner:
+            if DISCORD_OWNER_ID:
+                cur.execute(
+                    "SELECT id FROM discord_whitelist WHERE owner_id=? AND discord_id=? AND banned=0",
+                    (DISCORD_OWNER_ID, discord_id_str)
+                )
+                whitelist_entry = cur.fetchone()
+                
+                if not whitelist_entry:
+                    error_msg = f"❌ Tu Discord ID ({discord_id_str}) no está autorizado para acceder a esta aplicación. Solo usuarios seleccionados pueden ingresar."
+                    print(f"[Discord OAuth] Whitelist check failed for Discord ID: {discord_id_str}")
+                    if con:
+                        con.close()
+                    return {"success": False, "message": error_msg}
+                print(f"[Discord OAuth] Discord ID {discord_id_str} is whitelisted ✓")
+            elif WHITELIST_DISCORD_IDS:
+                whitelist = [uid.strip() for uid in WHITELIST_DISCORD_IDS.split(",")]
+                if discord_id_str not in whitelist:
+                    error_msg = f"❌ Tu Discord ID ({discord_id_str}) no está autorizado para acceder a esta aplicación. Solo usuarios seleccionados pueden ingresar."
+                    print(f"[Discord OAuth] Whitelist check failed for Discord ID: {discord_id_str}")
+                    if con:
+                        con.close()
+                    return {"success": False, "message": error_msg}
+                print(f"[Discord OAuth] Discord ID {discord_id_str} is whitelisted ✓")
+        else:
+            print(f"[Discord OAuth] Owner Discord ID {discord_id_str} - bypassing whitelist check ✓")
         
         avatar_hash = user_data.get("avatar")
         avatar_url = f"https://cdn.discordapp.com/avatars/{discord_id}/{avatar_hash}.png" if avatar_hash else None
