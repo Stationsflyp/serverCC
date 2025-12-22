@@ -116,7 +116,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # ----------------- CHAT -----------------
 class ChatMessage(BaseModel):
     username: str
@@ -415,6 +414,24 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS discord_whitelist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id TEXT NOT NULL,
+            discord_id TEXT NOT NULL,
+            username TEXT,
+            status TEXT DEFAULT 'active',
+            banned INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            UNIQUE(owner_id, discord_id)
+        )
+    """)
+
+    try:
+        cur.execute("ALTER TABLE discord_whitelist ADD COLUMN banned INTEGER DEFAULT 0")
+    except:
+        pass
+
     cur.execute("SELECT COUNT(*) FROM config WHERE key='app_version'")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO config (key, value) VALUES ('app_version', '1.1')") 
@@ -447,7 +464,7 @@ def gen_session():
     return secrets.token_urlsafe(32)
 
 def gen_license():
-    return "OXCY-" + secrets.token_hex(8).upper()
+    return "AuthGuard-" + secrets.token_hex(8).upper()
 
 def gen_owner_id():
     return secrets.token_hex(5).upper()
@@ -934,34 +951,57 @@ def discord_callback(data: DiscordCallbackRequest):
         
         print(f"[Discord OAuth] User: {discord_username} ({discord_id}), Email: {discord_email}")
         
+        con = db()
+        cur = con.cursor()
+        
+        DISCORD_OWNER_ID = os.getenv("DISCORD_OWNER_ID", "").strip()
         WHITELIST_DISCORD_IDS = os.getenv("WHITELIST_DISCORD_IDS", "").strip()
-        if WHITELIST_DISCORD_IDS:
+        
+        discord_id_str = str(discord_id)
+        
+        if DISCORD_OWNER_ID:
+            cur.execute(
+                "SELECT id FROM discord_whitelist WHERE owner_id=? AND discord_id=? AND banned=0",
+                (DISCORD_OWNER_ID, discord_id_str)
+            )
+            whitelist_entry = cur.fetchone()
+            
+            if not whitelist_entry:
+                error_msg = f"❌ Tu Discord ID ({discord_id_str}) no está autorizado para acceder a esta aplicación. Solo usuarios seleccionados pueden ingresar."
+                print(f"[Discord OAuth] Whitelist check failed for Discord ID: {discord_id_str}")
+                if con:
+                    con.close()
+                return {"success": False, "message": error_msg}
+            print(f"[Discord OAuth] Discord ID {discord_id_str} is whitelisted ✓")
+        elif WHITELIST_DISCORD_IDS:
             whitelist = [uid.strip() for uid in WHITELIST_DISCORD_IDS.split(",")]
-            discord_id_str = str(discord_id)
             if discord_id_str not in whitelist:
                 error_msg = f"❌ Tu Discord ID ({discord_id_str}) no está autorizado para acceder a esta aplicación. Solo usuarios seleccionados pueden ingresar."
                 print(f"[Discord OAuth] Whitelist check failed for Discord ID: {discord_id_str}")
+                if con:
+                    con.close()
                 return {"success": False, "message": error_msg}
             print(f"[Discord OAuth] Discord ID {discord_id_str} is whitelisted ✓")
         
         avatar_hash = user_data.get("avatar")
         avatar_url = f"https://cdn.discordapp.com/avatars/{discord_id}/{avatar_hash}.png" if avatar_hash else None
         
-        con = db()
-        cur = con.cursor()
-        
         cur.execute("SELECT owner_id, secret, app_name FROM users WHERE username=? LIMIT 1", (f"discord_{discord_id}",))
         user = cur.fetchone()
         
         if user:
             print(f"[Discord OAuth] User already exists, returning credentials")
+            DISCORD_OWNER_ID = os.getenv("DISCORD_OWNER_ID", "").strip()
+            is_owner = str(discord_id) == DISCORD_OWNER_ID if DISCORD_OWNER_ID else False
+            con.close()
             return {
                 "success": True,
                 "owner_id": user[0],
                 "secret": user[1],
                 "app_name": user[2],
                 "avatar": avatar_url,
-                "email": discord_email
+                "email": discord_email,
+                "is_owner": is_owner
             }
         
         print(f"[Discord OAuth] Creating new user...")
@@ -970,20 +1010,26 @@ def discord_callback(data: DiscordCallbackRequest):
         app_name = f"Discord_{discord_username}"
         temp_password = sha256(secrets.token_urlsafe(32))
         
+        DISCORD_OWNER_ID = os.getenv("DISCORD_OWNER_ID", "").strip()
+        is_owner = str(discord_id) == DISCORD_OWNER_ID if DISCORD_OWNER_ID else False
+        is_admin = 1 if is_owner else 0
+        
         cur.execute(
             "INSERT INTO users (username, password, app_name, owner_id, secret, is_admin) VALUES (?, ?, ?, ?, ?, ?)",
-            (f"discord_{discord_id}", temp_password, app_name, owner_id, secret, 1)
+            (f"discord_{discord_id}", temp_password, app_name, owner_id, secret, is_admin)
         )
         con.commit()
         
-        print(f"[Discord OAuth] User created: {app_name}")
+        print(f"[Discord OAuth] User created: {app_name} (Owner: {is_owner})")
+        con.close()
         return {
             "success": True,
             "owner_id": owner_id,
             "secret": secret,
             "app_name": app_name,
             "avatar": avatar_url,
-            "email": discord_email
+            "email": discord_email,
+            "is_owner": is_owner
         }
     except Exception as e:
         print(f"[Discord OAuth] EXCEPTION: {str(e)}")
@@ -1998,18 +2044,21 @@ def client_list_licenses(owner_id: str, secret: str = None):
         con = db()
         cur = con.cursor()
         cur.execute(
-            "SELECT id, license_key, hwid, expires FROM licenses WHERE owner_id=? ORDER BY id DESC",
+            "SELECT id, license_key, hwid, expires, notes FROM licenses WHERE owner_id=? ORDER BY id DESC",
             (owner_id,)
         )
         rows = cur.fetchall()
         
         licenses = []
         for r in rows:
+            status = "active" if r[2] else "unused"
             licenses.append({
                 "id": r[0],
                 "key": r[1],
                 "hwid": r[2],
-                "expires": r[3]
+                "expires": r[3],
+                "notes": r[4],
+                "status": status
             })
         
         return {"success": True, "licenses": licenses}
@@ -2086,6 +2135,149 @@ def client_delete_all_licenses(data: ClientRequest):
         deleted = cur.rowcount
         con.commit()
         return {"success": True, "message": f"Deleted {deleted} licenses", "count": deleted}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.get("/api/client/discord/whitelist")
+def get_discord_whitelist(owner_id: str = None, secret: str = None):
+    is_valid, auth_result = verify_client(owner_id, secret)
+    if not is_valid:
+        return {"success": False, "message": "Acceso denegado"}
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute(
+            "SELECT id, discord_id, username, status, banned, created_at FROM discord_whitelist WHERE owner_id=? ORDER BY created_at DESC",
+            (owner_id,)
+        )
+        rows = cur.fetchall()
+        whitelist = [
+            {
+                "id": row[0],
+                "discord_id": row[1],
+                "username": row[2],
+                "status": row[3],
+                "banned": row[4],
+                "created_at": row[5]
+            }
+            for row in rows
+        ]
+        return {"success": True, "whitelist": whitelist}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/client/discord/whitelist/add")
+def add_to_discord_whitelist(data: AdminActionRequest):
+    is_valid, auth_result = verify_client(data.owner_id, data.secret)
+    if not is_valid:
+        return {"success": False, "message": "Acceso denegado"}
+    
+    discord_id = data.action_data.get("discord_id") if data.action_data else None
+    username = data.action_data.get("username") if data.action_data else None
+    
+    if not discord_id:
+        return {"success": False, "message": "discord_id es requerido"}
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute(
+            "INSERT INTO discord_whitelist (owner_id, discord_id, username, status, created_at) VALUES (?, ?, ?, 'active', ?)",
+            (data.owner_id, str(discord_id), username or f"User_{discord_id}", datetime.datetime.utcnow().isoformat())
+        )
+        con.commit()
+        return {"success": True, "message": f"Usuario {discord_id} agregado a whitelist"}
+    except sqlite3.IntegrityError:
+        return {"success": False, "message": "Este Discord ID ya está en la whitelist"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/client/discord/whitelist/remove/{whitelist_id}")
+def remove_from_discord_whitelist(whitelist_id: int, data: ClientRequest):
+    is_valid, auth_result = verify_client(data.owner_id, data.secret)
+    if not is_valid:
+        return {"success": False, "message": "Acceso denegado"}
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute("SELECT owner_id FROM discord_whitelist WHERE id=?", (whitelist_id,))
+        row = cur.fetchone()
+        
+        if not row or row[0] != data.owner_id:
+            return {"success": False, "message": "Acceso denegado"}
+        
+        cur.execute("DELETE FROM discord_whitelist WHERE id=?", (whitelist_id,))
+        con.commit()
+        return {"success": True, "message": "Usuario removido de whitelist"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/client/discord/whitelist/ban/{whitelist_id}")
+def ban_from_discord_whitelist(whitelist_id: int, data: ClientRequest):
+    is_valid, auth_result = verify_client(data.owner_id, data.secret)
+    if not is_valid:
+        return {"success": False, "message": "Acceso denegado"}
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute("SELECT owner_id FROM discord_whitelist WHERE id=?", (whitelist_id,))
+        row = cur.fetchone()
+        
+        if not row or row[0] != data.owner_id:
+            return {"success": False, "message": "Acceso denegado"}
+        
+        cur.execute("UPDATE discord_whitelist SET banned=1, status='banned' WHERE id=?", (whitelist_id,))
+        con.commit()
+        return {"success": True, "message": "Usuario baneado"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/client/discord/whitelist/unban/{whitelist_id}")
+def unban_from_discord_whitelist(whitelist_id: int, data: ClientRequest):
+    is_valid, auth_result = verify_client(data.owner_id, data.secret)
+    if not is_valid:
+        return {"success": False, "message": "Acceso denegado"}
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute("SELECT owner_id FROM discord_whitelist WHERE id=?", (whitelist_id,))
+        row = cur.fetchone()
+        
+        if not row or row[0] != data.owner_id:
+            return {"success": False, "message": "Acceso denegado"}
+        
+        cur.execute("UPDATE discord_whitelist SET banned=0, status='active' WHERE id=?", (whitelist_id,))
+        con.commit()
+        return {"success": True, "message": "Usuario desbaneado"}
     except Exception as e:
         return {"success": False, "message": str(e)}
     finally:
