@@ -1128,7 +1128,14 @@ def unban_ip(ban_id: int, data: AdminAuthRequest):
     try:
         con = db()
         cur = con.cursor()
-        cur.execute("DELETE FROM banned_ips WHERE id=?", (ban_id,))
+        cur.execute("SELECT hwid FROM banned_ips WHERE id=?", (ban_id,))
+        result = cur.fetchone()
+        if result:
+            hwid_to_unban = result[0]
+            cur.execute("DELETE FROM banned_ips WHERE id=?", (ban_id,))
+            if hwid_to_unban:
+                cur.execute("UPDATE licenses SET hwid=NULL WHERE hwid=?", (hwid_to_unban,))
+            con.commit()
         return {"success": True, "message": "Baneado removido"}
     except Exception:
         raise HTTPException(500, "Error al desbanear")
