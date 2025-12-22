@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -9,6 +9,7 @@ import datetime
 import os
 import secrets
 import requests
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -115,6 +116,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ----------------- CHAT -----------------
+class ChatMessage(BaseModel):
+    username: str
+    message: str
+    avatar_url: str = None
+    email: str = None
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except:
+                pass
+
+manager = ConnectionManager()
 
 # ----------------- DB -----------------
 DB_FILE = "oxcy_auth.db"
@@ -308,6 +336,18 @@ def init_db():
     except:
         pass
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            message TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            owner_id TEXT,
+            avatar_url TEXT,
+            email TEXT
+        )
+    """)
+
     cur.execute("SELECT COUNT(*) FROM config WHERE key='app_version'")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO config (key, value) VALUES ('app_version', '1.1')") 
@@ -340,7 +380,7 @@ def gen_session():
     return secrets.token_urlsafe(32)
 
 def gen_license():
-    return "AuthGuard-" + secrets.token_hex(8).upper()
+    return "OXCY-" + secrets.token_hex(8).upper()
 
 def gen_owner_id():
     return secrets.token_hex(5).upper()
@@ -1911,6 +1951,71 @@ def client_delete_license(license_id: int, data: ClientRequest):
     finally:
         if con:
             con.close()
+
+@app.get("/api/chat/history")
+def get_chat_history():
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        cur.execute("SELECT username, message, timestamp, avatar_url, email FROM chat_messages ORDER BY id DESC LIMIT 50")
+        messages = cur.fetchall()
+        return {"success": True, "messages": [{"username": m[0], "message": m[1], "timestamp": m[2], "avatar_url": m[3], "email": m[4]} for m in reversed(messages)]}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+def count_words(text: str) -> int:
+    return len(text.split())
+
+@app.websocket("/ws/chat")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    con = None
+    try:
+        while True:
+            data = await websocket.receive_text()
+            msg_data = json.loads(data)
+            username = msg_data.get("username", "Unknown")
+            message = msg_data.get("message", "").strip()
+            avatar_url = msg_data.get("avatar_url")
+            email = msg_data.get("email")
+            
+            if not message:
+                await websocket.send_json({"error": "Mensaje vacío"})
+                continue
+            
+            if count_words(message) > 30:
+                await websocket.send_json({"error": f"Máximo 30 palabras. Tu mensaje tiene {count_words(message)} palabras."})
+                continue
+            
+            timestamp = datetime.datetime.utcnow().isoformat()
+            
+            try:
+                con = db()
+                cur = con.cursor()
+                cur.execute(
+                    "INSERT INTO chat_messages (username, message, timestamp, avatar_url, email) VALUES (?, ?, ?, ?, ?)",
+                    (username, message, timestamp, avatar_url, email)
+                )
+                con.commit()
+            except Exception as e:
+                print(f"Error guardando mensaje: {e}")
+            finally:
+                if con:
+                    con.close()
+            
+            await manager.broadcast({
+                "username": username,
+                "message": message,
+                "timestamp": timestamp,
+                "avatar_url": avatar_url,
+                "email": email
+            })
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 @app.get("/index.html")
 @app.get("/")
