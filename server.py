@@ -2316,7 +2316,7 @@ def test_webhook(data: dict):
     except Exception as e:
         return {"success": False, "message": f"Error al probar webhook: {str(e)}"}
 
-@app.websocket("/ws/chat")
+@app.websocket("/api/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     con = None
