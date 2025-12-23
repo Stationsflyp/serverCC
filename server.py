@@ -454,6 +454,7 @@ def init_db():
             avatar_url TEXT,
             profile_completed INTEGER DEFAULT 0,
             created_at TEXT NOT NULL,
+            created_by_owner_id TEXT,
             UNIQUE(owner_id, username)
         )
     """)
@@ -484,6 +485,11 @@ def init_db():
 
     try:
         cur.execute("ALTER TABLE owner_users ADD COLUMN profile_completed INTEGER DEFAULT 0")
+    except:
+        pass
+
+    try:
+        cur.execute("ALTER TABLE owner_users ADD COLUMN created_by_owner_id TEXT")
     except:
         pass
 
