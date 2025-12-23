@@ -124,6 +124,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 os.makedirs("avatars", exist_ok=True)
 app.mount("/avatars", StaticFiles(directory="avatars"), name="avatars")
 
@@ -2473,25 +2474,24 @@ def add_owner_user(data: AdminActionRequest):
         
         password_hash = hash_password(password)
         
-        user_owner_id = gen_owner_id()
         user_secret = gen_secret()
         user_app_name = gen_app_name()
         
         cur.execute(
             "INSERT INTO owner_users (owner_id, username, password_hash, display_name, profile_completed, avatar_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_owner_id, username, password_hash, display_name or username, 0, None, datetime.datetime.utcnow().isoformat())
+            (data.owner_id, username, password_hash, display_name or username, 0, None, datetime.datetime.utcnow().isoformat())
         )
         
         cur.execute(
             "INSERT INTO users (username, password, app_name, owner_id, secret, is_admin) VALUES (?, ?, ?, ?, ?, ?)",
-            (username, sha256(password), user_app_name, user_owner_id, user_secret, 0)
+            (username, sha256(password), user_app_name, data.owner_id, user_secret, 0)
         )
         
         con.commit()
         return {
             "success": True,
             "message": f"Usuario {username} creado exitosamente",
-            "owner_id": user_owner_id,
+            "owner_id": data.owner_id,
             "secret": user_secret,
             "app_name": user_app_name
         }
