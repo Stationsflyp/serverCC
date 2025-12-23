@@ -10,6 +10,7 @@ import os
 import secrets
 import requests
 import json
+import bcrypt
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -29,6 +30,11 @@ class LoginRequest(BaseModel):
     password: str = None
     hwid: str = "WEB_CLIENT"
     owner_id: str = None
+
+class ProfileSetupRequest(BaseModel):
+    username: str
+    password: str
+    display_name: str
 
 class ValidateRequest(BaseModel):
     username: str = None
@@ -439,8 +445,20 @@ def init_db():
             username TEXT NOT NULL,
             password_hash TEXT NOT NULL,
             display_name TEXT,
+            avatar_url TEXT,
+            profile_completed INTEGER DEFAULT 0,
             created_at TEXT NOT NULL,
             UNIQUE(owner_id, username)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            ip_address TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            success INTEGER DEFAULT 0
         )
     """)
 
@@ -452,6 +470,16 @@ def init_db():
             cur.execute("UPDATE users SET is_admin=1 WHERE owner_id IS NULL")
         except:
             pass
+
+    try:
+        cur.execute("ALTER TABLE owner_users ADD COLUMN avatar_url TEXT")
+    except:
+        pass
+
+    try:
+        cur.execute("ALTER TABLE owner_users ADD COLUMN profile_completed INTEGER DEFAULT 0")
+    except:
+        pass
 
     con.close()
 
@@ -483,6 +511,65 @@ def gen_owner_id():
 
 def gen_secret():
     return secrets.token_urlsafe(32)
+
+def hash_password(password: str) -> str:
+    salt = bcrypt.gensalt(rounds=12)
+    return bcrypt.hashpw(password.encode(), salt).decode()
+
+def verify_password_bcrypt(password: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode(), hashed.encode())
+    except:
+        return False
+
+def check_rate_limit(username: str, ip_address: str) -> tuple[bool, str]:
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        five_min_ago = (datetime.datetime.utcnow() - datetime.timedelta(minutes=5)).isoformat()
+        
+        cur.execute(
+            "SELECT COUNT(*) FROM login_attempts WHERE username=? AND ip_address=? AND timestamp > ? AND success=0",
+            (username, ip_address, five_min_ago)
+        )
+        failed_attempts = cur.fetchone()[0]
+        
+        if failed_attempts >= 5:
+            cur.execute(
+                "SELECT timestamp FROM login_attempts WHERE username=? AND ip_address=? AND success=0 ORDER BY timestamp ASC LIMIT 1",
+                (username, ip_address)
+            )
+            oldest = cur.fetchone()
+            if oldest:
+                oldest_time = datetime.datetime.fromisoformat(oldest[0])
+                reset_time = oldest_time + datetime.timedelta(minutes=5)
+                minutes_left = int((reset_time - datetime.datetime.utcnow()).total_seconds() / 60) + 1
+                return False, f"Demasiados intentos fallidos. Intenta en {minutes_left} minutos"
+        
+        return True, ""
+    except Exception as e:
+        return True, ""
+    finally:
+        if con:
+            con.close()
+
+def log_login_attempt(username: str, ip_address: str, success: bool):
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        cur.execute(
+            "INSERT INTO login_attempts (username, ip_address, timestamp, success) VALUES (?, ?, ?, ?)",
+            (username, ip_address, datetime.datetime.utcnow().isoformat(), 1 if success else 0)
+        )
+        con.commit()
+    except:
+        pass
+    finally:
+        if con:
+            con.close()
 
 def gen_app_name():
     return "App_" + secrets.token_hex(6).upper()
@@ -2367,11 +2454,11 @@ def add_owner_user(data: AdminActionRequest):
         con = db()
         cur = con.cursor()
         
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        password_hash = hash_password(password)
         
         cur.execute(
-            "INSERT INTO owner_users (owner_id, username, password_hash, display_name, created_at) VALUES (?, ?, ?, ?, ?)",
-            (data.owner_id, username, password_hash, display_name or username, datetime.datetime.utcnow().isoformat())
+            "INSERT INTO owner_users (owner_id, username, password_hash, display_name, profile_completed, avatar_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (data.owner_id, username, password_hash, display_name or username, 0, None, datetime.datetime.utcnow().isoformat())
         )
         con.commit()
         return {"success": True, "message": f"Usuario {username} creado exitosamente"}
@@ -2434,7 +2521,7 @@ def update_owner_user_password(user_id: int, data: AdminActionRequest):
         if not row or row[0] != data.owner_id:
             return {"success": False, "message": "Acceso denegado"}
         
-        password_hash = hashlib.sha256(new_password.encode()).hexdigest()
+        password_hash = hash_password(new_password)
         cur.execute("UPDATE owner_users SET password_hash=? WHERE id=?", (password_hash, user_id))
         con.commit()
         return {"success": True, "message": "Contraseña actualizada"}
@@ -2445,32 +2532,39 @@ def update_owner_user_password(user_id: int, data: AdminActionRequest):
             con.close()
 
 @app.post("/api/auth/username-login")
-def username_login(data: LoginRequest):
+def username_login(data: LoginRequest, request: Request):
     con = None
     try:
-        con = db()
-        cur = con.cursor()
+        ip_address = request.client.host if request.client else "unknown"
         
         if not data.username or not data.password:
             return {"success": False, "message": "username y password son requeridos"}
         
+        rate_ok, rate_msg = check_rate_limit(data.username, ip_address)
+        if not rate_ok:
+            return {"success": False, "message": rate_msg}
+        
+        con = db()
+        cur = con.cursor()
+        
         cur.execute(
-            "SELECT id, owner_id, password_hash, display_name FROM owner_users WHERE username=?",
+            "SELECT id, owner_id, password_hash, display_name, COALESCE(avatar_url, ''), COALESCE(profile_completed, 0) FROM owner_users WHERE username=?",
             (data.username,)
         )
         user = cur.fetchone()
         
         if not user:
+            log_login_attempt(data.username, ip_address, False)
             return {"success": False, "message": "Usuario o contraseña incorrectos"}
         
-        user_id, owner_id, password_hash, display_name = user
+        user_id, owner_id, password_hash, display_name, avatar_url, profile_completed = user
         
-        password_check = hashlib.sha256(data.password.encode()).hexdigest()
-        if password_check != password_hash:
+        if not verify_password_bcrypt(data.password, password_hash):
+            log_login_attempt(data.username, ip_address, False)
             return {"success": False, "message": "Usuario o contraseña incorrectos"}
         
         cur.execute(
-            "SELECT secret, app_name FROM users WHERE owner_id=? LIMIT 1",
+            "SELECT secret FROM users WHERE owner_id=? LIMIT 1",
             (owner_id,)
         )
         owner_record = cur.fetchone()
@@ -2478,7 +2572,10 @@ def username_login(data: LoginRequest):
         if not owner_record:
             return {"success": False, "message": "Aplicación no encontrada"}
         
-        secret, app_name = owner_record
+        log_login_attempt(data.username, ip_address, True)
+        
+        secret = owner_record[0]
+        app_name = f"{data.username}_{owner_id[:8]}"
         
         return {
             "success": True,
@@ -2486,6 +2583,8 @@ def username_login(data: LoginRequest):
             "secret": secret,
             "app_name": app_name,
             "display_name": display_name,
+            "avatar_url": avatar_url,
+            "profile_completed": profile_completed,
             "is_owner": False
         }
     except Exception as e:
@@ -2493,6 +2592,130 @@ def username_login(data: LoginRequest):
     finally:
         if con:
             con.close()
+
+@app.post("/api/auth/setup-profile")
+def setup_profile(data: ProfileSetupRequest):
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        if not data.username or not data.password or not data.display_name:
+            return {"success": False, "message": "username, password y display_name son requeridos"}
+        
+        if len(data.display_name.strip()) < 2:
+            return {"success": False, "message": "El nombre debe tener al menos 2 caracteres"}
+        
+        cur.execute(
+            "SELECT id, owner_id, password_hash, COALESCE(avatar_url, '') FROM owner_users WHERE username=?",
+            (data.username,)
+        )
+        user = cur.fetchone()
+        
+        if not user:
+            return {"success": False, "message": "Usuario no encontrado"}
+        
+        user_id, owner_id, password_hash, avatar_url = user
+        
+        if not verify_password_bcrypt(data.password, password_hash):
+            return {"success": False, "message": "Contraseña incorrecta"}
+        
+        cur.execute(
+            "UPDATE owner_users SET display_name=?, profile_completed=1 WHERE id=?",
+            (data.display_name.strip(), user_id)
+        )
+        con.commit()
+        
+        return {
+            "success": True,
+            "message": "Perfil configurado exitosamente",
+            "user_id": user_id,
+            "owner_id": owner_id
+        }
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/auth/upload-avatar")
+async def upload_avatar(request: Request):
+    con = None
+    try:
+        form = await request.form()
+        username = form.get("username")
+        password = form.get("password")
+        file = form.get("file")
+        
+        if not username or not password:
+            return {"success": False, "message": "username y password son requeridos"}
+        
+        if not file:
+            return {"success": False, "message": "archivo es requerido"}
+        
+        file_content = await file.read()
+        file_size_mb = len(file_content) / (1024 * 1024)
+        
+        if file_size_mb > 4:
+            return {"success": False, "message": "La foto debe pesar menos de 4MB"}
+        
+        allowed_types = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+        if file.content_type not in allowed_types:
+            return {"success": False, "message": "Formato de imagen no permitido (JPEG, PNG, WebP, GIF)"}
+        
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute(
+            "SELECT id, owner_id, password_hash FROM owner_users WHERE username=?",
+            (username,)
+        )
+        user = cur.fetchone()
+        
+        if not user:
+            return {"success": False, "message": "Usuario no encontrado"}
+        
+        user_id, owner_id, password_hash = user
+        
+        if not verify_password_bcrypt(password, password_hash):
+            return {"success": False, "message": "Contraseña incorrecta"}
+        
+        avatar_filename = f"{owner_id}_{user_id}_{int(datetime.datetime.utcnow().timestamp())}.{file.filename.split('.')[-1]}"
+        avatar_path = f"avatars/{avatar_filename}"
+        
+        os.makedirs("avatars", exist_ok=True)
+        with open(avatar_path, "wb") as f:
+            f.write(file_content)
+        
+        avatar_url = f"/avatars/{avatar_filename}"
+        
+        cur.execute(
+            "UPDATE owner_users SET avatar_url=? WHERE id=?",
+            (avatar_url, user_id)
+        )
+        con.commit()
+        
+        return {
+            "success": True,
+            "message": "Avatar actualizado",
+            "avatar_url": avatar_url
+        }
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.get("/avatars/{filename}")
+async def get_avatar(filename: str):
+    try:
+        avatar_path = f"avatars/{filename}"
+        if os.path.exists(avatar_path):
+            return FileResponse(avatar_path)
+        else:
+            return {"success": False, "message": "Avatar no encontrado"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
 
 @app.get("/api/chat/history")
 def get_chat_history():
