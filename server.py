@@ -2311,7 +2311,7 @@ def get_discord_whitelist(owner_id: str = None, secret: str = None):
 
 @app.post("/api/client/discord/whitelist/add")
 def add_to_discord_whitelist(data: AdminActionRequest):
-    is_valid, auth_result = verify_admin(data.owner_id, data.secret)
+    is_valid, auth_result = verify_client(data.owner_id, data.secret)
     if not is_valid:
         return {"success": False, "message": "Acceso denegado"}
     
