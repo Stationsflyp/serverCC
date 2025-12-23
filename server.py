@@ -816,7 +816,7 @@ def create_user(data: AdminCreateUserRequest):
 
 @app.post("/api/admin/generate")
 def generate_license(data: GenerateLicenseRequest):
-    is_valid, auth_result = verify_admin(data.owner_id, data.secret)
+    is_valid, auth_result = verify_client(data.owner_id, data.secret)
     if not is_valid:
         raise HTTPException(401, auth_result.get("message", "Acceso denegado"))
     
