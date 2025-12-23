@@ -1236,7 +1236,7 @@ def delete_user(user_id: int, data: AdminAuthRequest):
 # --------- ADMIN DELETE LICENSE ----------
 @app.post("/api/admin/delete_license/{license_id}")
 def delete_license(license_id: int, data: AdminAuthRequest):
-    is_valid, auth_result = verify_admin(data.owner_id, data.secret)
+    is_valid, auth_result = verify_client(data.owner_id, data.secret)
     if not is_valid:
         raise HTTPException(401, auth_result.get("message", "Acceso denegado"))
     
@@ -1244,10 +1244,18 @@ def delete_license(license_id: int, data: AdminAuthRequest):
     try:
         con = db()
         cur = con.cursor()
+        
+        cur.execute("SELECT owner_id FROM licenses WHERE id=?", (license_id,))
+        lic = cur.fetchone()
+        
+        if not lic or lic[0] != data.owner_id:
+            raise HTTPException(403, "Acceso denegado")
+        
         cur.execute("DELETE FROM licenses WHERE id=?", (license_id,))
+        con.commit()
         return {"success": True, "message": "Licencia eliminada"}
-    except Exception:
-        raise HTTPException(500, "Error al eliminar licencia")
+    except Exception as e:
+        raise HTTPException(500, f"Error al eliminar licencia: {str(e)}")
     finally:
         if con:
             con.close()
