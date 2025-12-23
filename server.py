@@ -2738,7 +2738,7 @@ async def upload_avatar(request: Request):
         with open(avatar_path, "wb") as f:
             f.write(file_content)
         
-        avatar_url = f"/avatars/{avatar_filename}"
+        avatar_url = f"https://questions-segment-mortgages-duncan.trycloudflare.com/avatars/{avatar_filename}"
         
         cur.execute(
             "UPDATE owner_users SET avatar_url=? WHERE id=?",
