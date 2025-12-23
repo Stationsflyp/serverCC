@@ -154,10 +154,10 @@ manager = ConnectionManager()
 DB_FILE = "oxcy_auth.db"
 
 def db():
-    conn = sqlite3.connect(DB_FILE, timeout=30.0, check_same_thread=False, isolation_level=None)
+    conn = sqlite3.connect(DB_FILE, timeout=30.0, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=30000")
-    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA synchronous=FULL")
     return conn
 
 # ----------------- INIT DB -----------------
@@ -2460,12 +2460,28 @@ def add_owner_user(data: AdminActionRequest):
         
         password_hash = hash_password(password)
         
+        user_owner_id = gen_owner_id()
+        user_secret = gen_secret()
+        user_app_name = gen_app_name()
+        
         cur.execute(
             "INSERT INTO owner_users (owner_id, username, password_hash, display_name, profile_completed, avatar_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (data.owner_id, username, password_hash, display_name or username, 0, None, datetime.datetime.utcnow().isoformat())
+            (user_owner_id, username, password_hash, display_name or username, 1, None, datetime.datetime.utcnow().isoformat())
         )
+        
+        cur.execute(
+            "INSERT INTO users (username, password, app_name, owner_id, secret, is_admin) VALUES (?, ?, ?, ?, ?, ?)",
+            (username, sha256(password), user_app_name, user_owner_id, user_secret, 0)
+        )
+        
         con.commit()
-        return {"success": True, "message": f"Usuario {username} creado exitosamente"}
+        return {
+            "success": True,
+            "message": f"Usuario {username} creado exitosamente",
+            "owner_id": user_owner_id,
+            "secret": user_secret,
+            "app_name": user_app_name
+        }
     except sqlite3.IntegrityError:
         return {"success": False, "message": "Este usuario ya existe en tu aplicación"}
     except Exception as e:
@@ -2569,8 +2585,8 @@ def username_login(data: LoginRequest, request: Request):
             return {"success": False, "message": "Usuario o contraseña incorrectos"}
         
         cur.execute(
-            "SELECT secret FROM users WHERE owner_id=? LIMIT 1",
-            (owner_id,)
+            "SELECT secret, app_name FROM users WHERE owner_id=? AND username=? LIMIT 1",
+            (owner_id, data.username)
         )
         owner_record = cur.fetchone()
         
@@ -2580,7 +2596,7 @@ def username_login(data: LoginRequest, request: Request):
         log_login_attempt(data.username, ip_address, True)
         
         secret = owner_record[0]
-        app_name = f"{data.username}_{owner_id[:8]}"
+        app_name = owner_record[1]
         
         return {
             "success": True,
@@ -2631,6 +2647,21 @@ def setup_profile(data: ProfileSetupRequest):
             "UPDATE owner_users SET display_name=?, profile_completed=1 WHERE id=?",
             (data.display_name.strip(), user_id)
         )
+        
+        cur.execute(
+            "SELECT id FROM users WHERE owner_id=? AND username=? LIMIT 1",
+            (owner_id, data.username)
+        )
+        user_in_users = cur.fetchone()
+        
+        if not user_in_users:
+            user_secret = gen_secret()
+            user_app_name = gen_app_name()
+            cur.execute(
+                "INSERT INTO users (username, password, app_name, owner_id, secret, is_admin) VALUES (?, ?, ?, ?, ?, ?)",
+                (data.username, sha256(data.password), user_app_name, owner_id, user_secret, 0)
+            )
+        
         con.commit()
         
         return {
