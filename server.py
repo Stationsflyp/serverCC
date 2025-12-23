@@ -2431,7 +2431,7 @@ def get_owner_users(owner_id: str = None, secret: str = None):
         cur = con.cursor()
         
         cur.execute(
-            "SELECT id, username, display_name, created_at FROM owner_users WHERE owner_id=? ORDER BY created_at DESC",
+            "SELECT id, username, display_name, created_at FROM owner_users WHERE created_by_owner_id=? ORDER BY created_at DESC",
             (owner_id,)
         )
         rows = cur.fetchall()
@@ -2479,8 +2479,8 @@ def add_owner_user(data: AdminActionRequest):
         user_app_name = gen_app_name()
         
         cur.execute(
-            "INSERT INTO owner_users (owner_id, username, password_hash, display_name, profile_completed, avatar_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_owner_id, username, password_hash, display_name or username, 0, None, datetime.datetime.utcnow().isoformat())
+            "INSERT INTO owner_users (owner_id, username, password_hash, display_name, profile_completed, avatar_url, created_at, created_by_owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_owner_id, username, password_hash, display_name or username, 0, None, datetime.datetime.utcnow().isoformat(), data.owner_id)
         )
         
         cur.execute(
