@@ -125,7 +125,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 os.makedirs("avatars", exist_ok=True)
 app.mount("/avatars", StaticFiles(directory="avatars"), name="avatars")
 
