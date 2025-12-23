@@ -125,6 +125,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 os.makedirs("avatars", exist_ok=True)
 app.mount("/avatars", StaticFiles(directory="avatars"), name="avatars")
 
@@ -1659,6 +1660,7 @@ def validate(data: ValidateRequest, request: Request):
             "UPDATE users SET hwid=?, ip=?, last_login=? WHERE id=?",
             (data.hwid, client_ip, datetime.datetime.utcnow().isoformat(), u[0])
         )
+        con.commit()
 
         return {"success": True, "message": "Valid"}
     finally:
