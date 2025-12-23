@@ -11,6 +11,7 @@ import secrets
 import requests
 import json
 import bcrypt
+import traceback
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -504,7 +505,7 @@ def gen_session():
     return secrets.token_urlsafe(32)
 
 def gen_license():
-    return "AuthGuard-" + secrets.token_hex(8).upper()
+    return "OXCY-" + secrets.token_hex(8).upper()
 
 def gen_owner_id():
     return secrets.token_hex(5).upper()
@@ -522,7 +523,7 @@ def verify_password_bcrypt(password: str, hashed: str) -> bool:
     except:
         return False
 
-def check_rate_limit(username: str, ip_address: str) -> tuple[bool, str]:
+def check_login_rate_limit(username: str, ip_address: str) -> tuple[bool, str]:
     con = None
     try:
         con = db()
@@ -551,6 +552,8 @@ def check_rate_limit(username: str, ip_address: str) -> tuple[bool, str]:
         
         return True, ""
     except Exception as e:
+        print(f"ERROR in check_login_rate_limit: {str(e)}")
+        traceback.print_exc()
         return True, ""
     finally:
         if con:
@@ -2541,7 +2544,7 @@ def username_login(data: LoginRequest, request: Request):
         if not data.username or not data.password:
             return {"success": False, "message": "username y password son requeridos"}
         
-        rate_ok, rate_msg = check_rate_limit(data.username, ip_address)
+        rate_ok, rate_msg = check_login_rate_limit(data.username, ip_address)
         if not rate_ok:
             return {"success": False, "message": rate_msg}
         
@@ -2590,6 +2593,8 @@ def username_login(data: LoginRequest, request: Request):
             "is_owner": False
         }
     except Exception as e:
+        print(f"ERROR in username_login: {str(e)}")
+        traceback.print_exc()
         return {"success": False, "message": str(e)}
     finally:
         if con:
