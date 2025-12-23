@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import sqlite3
 import hashlib
@@ -123,6 +124,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+os.makedirs("avatars", exist_ok=True)
+app.mount("/avatars", StaticFiles(directory="avatars"), name="avatars")
+
 # ----------------- CHAT -----------------
 class ChatMessage(BaseModel):
     username: str
@@ -1436,7 +1440,7 @@ def unban_ip(ban_id: int, data: AdminAuthRequest):
 # --------- ADMIN LIST HWID RESET REQUESTS ----------
 @app.get("/api/admin/hwid_resets")
 def list_hwid_resets(owner_id: str = None, secret: str = None):
-    is_valid, auth_result = verify_admin(owner_id, secret)
+    is_valid, auth_result = verify_client(owner_id, secret)
     if not is_valid:
         raise HTTPException(401, auth_result.get("message", "Acceso denegado"))
     
