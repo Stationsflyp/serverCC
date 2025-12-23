@@ -482,6 +482,7 @@ def init_db():
     except:
         pass
 
+    con.commit()
     con.close()
 
 init_db()
