@@ -534,9 +534,10 @@ def check_rate_limit(username: str, ip_address: str) -> tuple[bool, str]:
             "SELECT COUNT(*) FROM login_attempts WHERE username=? AND ip_address=? AND timestamp > ? AND success=0",
             (username, ip_address, five_min_ago)
         )
-        failed_attempts = cur.fetchone()[0]
+        result = cur.fetchone()
+        failed_attempts = int(result[0]) if result and result[0] else 0
         
-        if failed_attempts >= 5:
+        if int(failed_attempts) >= 5:
             cur.execute(
                 "SELECT timestamp FROM login_attempts WHERE username=? AND ip_address=? AND success=0 ORDER BY timestamp ASC LIMIT 1",
                 (username, ip_address)
@@ -2558,6 +2559,7 @@ def username_login(data: LoginRequest, request: Request):
             return {"success": False, "message": "Usuario o contraseña incorrectos"}
         
         user_id, owner_id, password_hash, display_name, avatar_url, profile_completed = user
+        profile_completed = int(profile_completed) if profile_completed else 0
         
         if not verify_password_bcrypt(data.password, password_hash):
             log_login_attempt(data.username, ip_address, False)
