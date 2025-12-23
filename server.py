@@ -432,6 +432,18 @@ def init_db():
     except:
         pass
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS owner_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            display_name TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(owner_id, username)
+        )
+    """)
+
     cur.execute("SELECT COUNT(*) FROM config WHERE key='app_version'")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO config (key, value) VALUES ('app_version', '1.1')") 
@@ -2296,6 +2308,186 @@ def unban_from_discord_whitelist(whitelist_id: int, data: ClientRequest):
         cur.execute("UPDATE discord_whitelist SET banned=0, status='active' WHERE id=?", (whitelist_id,))
         con.commit()
         return {"success": True, "message": "Usuario desbaneado"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.get("/api/client/owner-users")
+def get_owner_users(owner_id: str = None, secret: str = None):
+    is_valid, auth_result = verify_client(owner_id, secret)
+    if not is_valid:
+        return {"success": False, "message": "Acceso denegado"}
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute(
+            "SELECT id, username, display_name, created_at FROM owner_users WHERE owner_id=? ORDER BY created_at DESC",
+            (owner_id,)
+        )
+        rows = cur.fetchall()
+        users = [
+            {
+                "id": row[0],
+                "username": row[1],
+                "display_name": row[2],
+                "created_at": row[3]
+            }
+            for row in rows
+        ]
+        return {"success": True, "users": users}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/client/owner-users/add")
+def add_owner_user(data: AdminActionRequest):
+    is_valid, auth_result = verify_client(data.owner_id, data.secret)
+    if not is_valid:
+        return {"success": False, "message": "Acceso denegado"}
+    
+    username = data.action_data.get("username") if data.action_data else None
+    password = data.action_data.get("password") if data.action_data else None
+    display_name = data.action_data.get("display_name") if data.action_data else None
+    
+    if not username or not password:
+        return {"success": False, "message": "username y password son requeridos"}
+    
+    if len(password) < 6:
+        return {"success": False, "message": "La contraseña debe tener al menos 6 caracteres"}
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        cur.execute(
+            "INSERT INTO owner_users (owner_id, username, password_hash, display_name, created_at) VALUES (?, ?, ?, ?, ?)",
+            (data.owner_id, username, password_hash, display_name or username, datetime.datetime.utcnow().isoformat())
+        )
+        con.commit()
+        return {"success": True, "message": f"Usuario {username} creado exitosamente"}
+    except sqlite3.IntegrityError:
+        return {"success": False, "message": "Este usuario ya existe en tu aplicación"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/client/owner-users/delete/{user_id}")
+def delete_owner_user(user_id: int, data: ClientRequest):
+    is_valid, auth_result = verify_client(data.owner_id, data.secret)
+    if not is_valid:
+        return {"success": False, "message": "Acceso denegado"}
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute("SELECT owner_id FROM owner_users WHERE id=?", (user_id,))
+        row = cur.fetchone()
+        
+        if not row or row[0] != data.owner_id:
+            return {"success": False, "message": "Acceso denegado"}
+        
+        cur.execute("DELETE FROM owner_users WHERE id=?", (user_id,))
+        con.commit()
+        return {"success": True, "message": "Usuario eliminado"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/client/owner-users/update-password/{user_id}")
+def update_owner_user_password(user_id: int, data: AdminActionRequest):
+    is_valid, auth_result = verify_client(data.owner_id, data.secret)
+    if not is_valid:
+        return {"success": False, "message": "Acceso denegado"}
+    
+    new_password = data.action_data.get("password") if data.action_data else None
+    
+    if not new_password:
+        return {"success": False, "message": "password es requerido"}
+    
+    if len(new_password) < 6:
+        return {"success": False, "message": "La contraseña debe tener al menos 6 caracteres"}
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute("SELECT owner_id FROM owner_users WHERE id=?", (user_id,))
+        row = cur.fetchone()
+        
+        if not row or row[0] != data.owner_id:
+            return {"success": False, "message": "Acceso denegado"}
+        
+        password_hash = hashlib.sha256(new_password.encode()).hexdigest()
+        cur.execute("UPDATE owner_users SET password_hash=? WHERE id=?", (password_hash, user_id))
+        con.commit()
+        return {"success": True, "message": "Contraseña actualizada"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/auth/username-login")
+def username_login(data: LoginRequest):
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        if not data.username or not data.password:
+            return {"success": False, "message": "username y password son requeridos"}
+        
+        cur.execute(
+            "SELECT id, owner_id, password_hash, display_name FROM owner_users WHERE username=?",
+            (data.username,)
+        )
+        user = cur.fetchone()
+        
+        if not user:
+            return {"success": False, "message": "Usuario o contraseña incorrectos"}
+        
+        user_id, owner_id, password_hash, display_name = user
+        
+        password_check = hashlib.sha256(data.password.encode()).hexdigest()
+        if password_check != password_hash:
+            return {"success": False, "message": "Usuario o contraseña incorrectos"}
+        
+        cur.execute(
+            "SELECT secret, app_name FROM users WHERE owner_id=? LIMIT 1",
+            (owner_id,)
+        )
+        owner_record = cur.fetchone()
+        
+        if not owner_record:
+            return {"success": False, "message": "Aplicación no encontrada"}
+        
+        secret, app_name = owner_record
+        
+        return {
+            "success": True,
+            "owner_id": owner_id,
+            "secret": secret,
+            "app_name": app_name,
+            "display_name": display_name,
+            "is_owner": False
+        }
     except Exception as e:
         return {"success": False, "message": str(e)}
     finally:
