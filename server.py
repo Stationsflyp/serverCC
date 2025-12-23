@@ -2275,7 +2275,7 @@ def get_discord_whitelist(owner_id: str = None, secret: str = None):
         cur = con.cursor()
         
         cur.execute(
-            "SELECT id, discord_id, username, status, banned, created_at FROM discord_whitelist WHERE owner_id=? ORDER BY created_at DESC",
+            "SELECT id, discord_id, username, status, COALESCE(banned, 0), created_at FROM discord_whitelist WHERE owner_id=? ORDER BY created_at DESC",
             (owner_id,)
         )
         rows = cur.fetchall()
@@ -2467,7 +2467,7 @@ def add_owner_user(data: AdminActionRequest):
         
         cur.execute(
             "INSERT INTO owner_users (owner_id, username, password_hash, display_name, profile_completed, avatar_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_owner_id, username, password_hash, display_name or username, 1, None, datetime.datetime.utcnow().isoformat())
+            (user_owner_id, username, password_hash, display_name or username, 0, None, datetime.datetime.utcnow().isoformat())
         )
         
         cur.execute(
