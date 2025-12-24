@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import sqlite3
@@ -161,6 +161,8 @@ class ScreenShareManager:
         self.viewers: dict[str, list[WebSocket]] = {}
         # Map client_id -> host websocket (optional)
         self.hosts: dict[str, WebSocket] = {}
+        # Map client_id -> latest frame data (for HTTP polling)
+        self.latest_frames: dict[str, bytes] = {}
 
     async def connect_viewer(self, websocket: WebSocket, client_id: str):
         await websocket.accept()
@@ -182,6 +184,7 @@ class ScreenShareManager:
             del self.hosts[client_id]
 
     async def broadcast_frame(self, client_id: str, frame_data: bytes):
+        self.latest_frames[client_id] = frame_data
         if client_id in self.viewers:
             to_remove = []
             for viewer in self.viewers[client_id]:
@@ -193,6 +196,9 @@ class ScreenShareManager:
             for viewer in to_remove:
                 if viewer in self.viewers[client_id]:
                     self.viewers[client_id].remove(viewer)
+    
+    def get_latest_frame(self, client_id: str) -> bytes | None:
+        return self.latest_frames.get(client_id)
 
 screen_manager = ScreenShareManager()
 
@@ -3374,6 +3380,14 @@ async def screen_view_endpoint(websocket: WebSocket, client_id: str):
     except Exception as e:
         print(f"[SCREEN VIEW] Exception para client_id {client_id}: {type(e).__name__}: {e}")
         screen_manager.disconnect_viewer(websocket, client_id)
+
+@app.get("/api/screen/frame/{client_id}")
+async def get_screen_frame(client_id: str):
+    print(f"[SCREEN POLL] Request frame para client_id: {client_id}")
+    frame = screen_manager.get_latest_frame(client_id)
+    if frame:
+        return Response(content=frame, media_type="image/jpeg")
+    return Response(content=b"", media_type="image/jpeg", status_code=204)
 
 @app.get("/index.html")
 @app.get("/")
