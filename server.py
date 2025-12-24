@@ -3342,27 +3342,6 @@ async def screen_host_endpoint(websocket: WebSocket, client_id: str):
         print(f"Screen host error: {e}")
         screen_manager.disconnect_host(client_id)
 
-@app.websocket("/api/ws/screen/view/{client_id}")
-async def screen_view_endpoint(websocket: WebSocket, client_id: str):
-    print(f"[SCREEN VIEW] Solicitud de conexión para client_id: {client_id}")
-    try:
-        await websocket.accept()
-        print(f"[SCREEN VIEW] Conexión aceptada para client_id: {client_id}")
-        await screen_manager.connect_viewer(websocket, client_id)
-        print(f"[SCREEN VIEW] Viewer conectado para client_id: {client_id}")
-        
-        while True:
-            try:
-                msg = await websocket.receive_text()
-            except:
-                pass
-    except WebSocketDisconnect:
-        print(f"[SCREEN VIEW] WebSocketDisconnect para client_id: {client_id}")
-        screen_manager.disconnect_viewer(websocket, client_id)
-    except Exception as e:
-        print(f"[SCREEN VIEW] Exception para client_id {client_id}: {type(e).__name__}: {e}")
-        screen_manager.disconnect_viewer(websocket, client_id)
-
 @app.post("/api/screen/upload/{client_id}")
 async def upload_screen_frame(client_id: str, request: Request):
     try:
