@@ -157,12 +157,7 @@ manager = ConnectionManager()
 # ----------------- SCREEN SHARE -----------------
 class ScreenShareManager:
     def __init__(self):
-        # Map client_id -> list of viewer websockets
         self.viewers: dict[str, list[WebSocket]] = {}
-        # Map client_id -> host websocket (optional)
-        self.hosts: dict[str, WebSocket] = {}
-        # Map client_id -> latest frame data (for HTTP polling)
-        self.latest_frames: dict[str, bytes] = {}
 
     async def connect_viewer(self, websocket: WebSocket, client_id: str):
         await websocket.accept()
@@ -175,16 +170,7 @@ class ScreenShareManager:
             if websocket in self.viewers[client_id]:
                 self.viewers[client_id].remove(websocket)
 
-    async def connect_host(self, websocket: WebSocket, client_id: str):
-        await websocket.accept()
-        self.hosts[client_id] = websocket
-
-    def disconnect_host(self, client_id: str):
-        if client_id in self.hosts:
-            del self.hosts[client_id]
-
     async def broadcast_frame(self, client_id: str, frame_data: bytes):
-        self.latest_frames[client_id] = frame_data
         if client_id in self.viewers:
             to_remove = []
             for viewer in self.viewers[client_id]:
@@ -196,9 +182,6 @@ class ScreenShareManager:
             for viewer in to_remove:
                 if viewer in self.viewers[client_id]:
                     self.viewers[client_id].remove(viewer)
-    
-    def get_latest_frame(self, client_id: str) -> bytes | None:
-        return self.latest_frames.get(client_id)
 
 screen_manager = ScreenShareManager()
 
@@ -3381,15 +3364,31 @@ async def screen_view_endpoint(websocket: WebSocket, client_id: str):
         print(f"[SCREEN VIEW] Exception para client_id {client_id}: {type(e).__name__}: {e}")
         screen_manager.disconnect_viewer(websocket, client_id)
 
-@app.get("/api/screen/frame/{client_id}")
-async def get_screen_frame(client_id: str):
-    print(f"[SCREEN POLL] ✅ Request frame para client_id: {client_id}")
-    frame = screen_manager.get_latest_frame(client_id)
-    if frame:
-        print(f"[SCREEN POLL] ✅ Frame encontrado, tamaño: {len(frame)} bytes")
-        return Response(content=frame, media_type="image/jpeg")
-    print(f"[SCREEN POLL] ⚠️ Sin frame para client_id {client_id}")
-    return Response(content=b"", media_type="image/jpeg", status_code=204)
+@app.post("/api/screen/upload/{client_id}")
+async def upload_screen_frame(client_id: str, request: Request):
+    try:
+        frame_data = await request.body()
+        if frame_data:
+            print(f"[SCREEN UPLOAD] ✅ Frame recibido para client_id: {client_id}, tamaño: {len(frame_data)} bytes")
+            await screen_manager.broadcast_frame(client_id, frame_data)
+            return {"status": "ok"}
+    except Exception as e:
+        print(f"[SCREEN UPLOAD] ❌ Error: {e}")
+    return {"status": "error"}
+
+@app.websocket("/api/ws/screen/view/{client_id}")
+async def screen_view_endpoint(websocket: WebSocket, client_id: str):
+    print(f"[SCREEN VIEW] Conexión WebSocket para client_id: {client_id}")
+    await screen_manager.connect_viewer(websocket, client_id)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        screen_manager.disconnect_viewer(websocket, client_id)
+        print(f"[SCREEN VIEW] Desconexión para client_id: {client_id}")
+    except Exception as e:
+        screen_manager.disconnect_viewer(websocket, client_id)
+        print(f"[SCREEN VIEW] Error: {e}")
 
 @app.get("/index.html")
 @app.get("/")
