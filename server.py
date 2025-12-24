@@ -1696,7 +1696,7 @@ def validate(data: ValidateRequest, request: Request):
         )
         con.commit()
 
-        return {"success": True, "message": "Valid"}
+        return {"success": True, "message": "Valid", "user_id": str(u[0])}
     finally:
         if con:
             con.close()
