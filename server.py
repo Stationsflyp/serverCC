@@ -62,6 +62,7 @@ class ClientCreateUser(BaseModel):
     secret: str = None
     username: str = None
     password: str = None
+    no_hwid_check: int = 0
 
 class ClientRequest(BaseModel):
     owner_id: str
@@ -375,6 +376,11 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN hwid_reset_requested INTEGER DEFAULT 0")
     except:
         pass
+    
+    try:
+        cur.execute("ALTER TABLE users ADD COLUMN no_hwid_check INTEGER DEFAULT 0")
+    except:
+        pass
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS chat_messages (
@@ -546,7 +552,7 @@ def gen_session():
     return secrets.token_urlsafe(32)
 
 def gen_license():
-    return "OXCY-" + secrets.token_hex(8).upper()
+    return "AuthGuard-" + secrets.token_hex(8).upper()
 
 def gen_owner_id():
     return secrets.token_hex(5).upper()
@@ -967,7 +973,7 @@ def client_list_users(owner_id: str, secret: str = None):
         con = db()
         cur = con.cursor()
         cur.execute(
-            "SELECT id, username, hwid, ip, last_login, blocked, hwid_reset_requested FROM users WHERE owner_id=? ORDER BY id DESC",
+            "SELECT id, username, hwid, ip, last_login, blocked, hwid_reset_requested, no_hwid_check FROM users WHERE owner_id=? ORDER BY id DESC",
             (owner_id,)
         )
         rows = cur.fetchall()
@@ -981,7 +987,8 @@ def client_list_users(owner_id: str, secret: str = None):
                 "ip": r[3],
                 "last_login": r[4],
                 "blocked": r[5],
-                "hwid_reset_requested": r[6]
+                "hwid_reset_requested": r[6],
+                "no_hwid_check": r[7]
             })
 
         return {"success": True, "users": users}
@@ -1646,12 +1653,12 @@ def validate(data: ValidateRequest, request: Request):
 
         if data.owner_id:
             cur.execute(
-                "SELECT id, password, blocked, owner_id, is_admin, hwid, hwid_locked, hwid_reset_requested, force_logout FROM users WHERE username=? AND owner_id=?",
+                "SELECT id, password, blocked, owner_id, is_admin, hwid, hwid_locked, hwid_reset_requested, force_logout, no_hwid_check FROM users WHERE username=? AND owner_id=?",
                 (data.username, data.owner_id)
             )
         else:
             cur.execute(
-                "SELECT id, password, blocked, owner_id, is_admin, hwid, hwid_locked, hwid_reset_requested, force_logout FROM users WHERE username=?",
+                "SELECT id, password, blocked, owner_id, is_admin, hwid, hwid_locked, hwid_reset_requested, force_logout, no_hwid_check FROM users WHERE username=?",
                 (data.username,)
             )
         u = cur.fetchone()
@@ -1672,23 +1679,25 @@ def validate(data: ValidateRequest, request: Request):
         hwid_locked = u[6]
         hwid_reset_requested = u[7]
         force_logout = u[8]
+        no_hwid_check = u[9]
         
         if force_logout == 1:
             cur.execute("UPDATE users SET force_logout=0 WHERE id=?", (u[0],))
             con.commit()
             return {"success": False, "message": "FORCE_LOGOUT"}
 
-        if hwid_actual and hwid_actual != data.hwid:
-            if not hwid_locked:
-                cur.execute(
-                    "UPDATE users SET hwid_locked=1, hwid_reset_requested=1 WHERE id=?",
-                    (u[0],)
-                )
-                con.commit()
-            return {"success": False, "message": "HWID_CHANGED", "previous_hwid": hwid_actual, "current_hwid": data.hwid}
+        if no_hwid_check == 0:
+            if hwid_actual and hwid_actual != data.hwid:
+                if not hwid_locked:
+                    cur.execute(
+                        "UPDATE users SET hwid_locked=1, hwid_reset_requested=1 WHERE id=?",
+                        (u[0],)
+                    )
+                    con.commit()
+                return {"success": False, "message": "HWID_CHANGED", "previous_hwid": hwid_actual, "current_hwid": data.hwid}
 
-        if hwid_reset_requested:
-            return {"success": False, "message": "HWID_RESET_PENDING"}
+            if hwid_reset_requested:
+                return {"success": False, "message": "HWID_RESET_PENDING"}
 
         cur.execute(
             "UPDATE users SET hwid=?, ip=?, last_login=? WHERE id=?",
@@ -1961,8 +1970,8 @@ def client_create_user(data: ClientCreateUser):
         
         user_secret = gen_secret()
         cur.execute(
-            "INSERT INTO users (username, password, app_name, owner_id, secret, is_admin) VALUES (?, ?, ?, ?, ?, ?)",
-            (data.username, sha256(data.password), data.username, data.owner_id, user_secret, 0)
+            "INSERT INTO users (username, password, app_name, owner_id, secret, is_admin, no_hwid_check) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (data.username, sha256(data.password), data.username, data.owner_id, user_secret, 0, data.no_hwid_check)
         )
         con.commit()
         return {"success": True, "message": "User created for exe"}
