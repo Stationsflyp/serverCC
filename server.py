@@ -3383,10 +3383,12 @@ async def screen_view_endpoint(websocket: WebSocket, client_id: str):
 
 @app.get("/api/screen/frame/{client_id}")
 async def get_screen_frame(client_id: str):
-    print(f"[SCREEN POLL] Request frame para client_id: {client_id}")
+    print(f"[SCREEN POLL] ✅ Request frame para client_id: {client_id}")
     frame = screen_manager.get_latest_frame(client_id)
     if frame:
+        print(f"[SCREEN POLL] ✅ Frame encontrado, tamaño: {len(frame)} bytes")
         return Response(content=frame, media_type="image/jpeg")
+    print(f"[SCREEN POLL] ⚠️ Sin frame para client_id {client_id}")
     return Response(content=b"", media_type="image/jpeg", status_code=204)
 
 @app.get("/index.html")
