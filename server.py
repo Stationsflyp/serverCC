@@ -119,12 +119,14 @@ class GenerateLicenseRequest(BaseModel):
 # ----------------- CORS -----------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https://authshield\.netlify\.app|http://localhost.*|http://127\.0\.0\.1.*",
+    allow_origins=[
+        "https://authshield.netlify.app",
+        "https://questions-segment-mortgages-duncan.trycloudflare.com",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 os.makedirs("avatars", exist_ok=True)
 app.mount("/avatars", StaticFiles(directory="avatars"), name="avatars")
@@ -3358,17 +3360,23 @@ async def screen_host_endpoint(websocket: WebSocket, client_id: str):
 
 @app.websocket("/api/ws/screen/view/{client_id}")
 async def screen_view_endpoint(websocket: WebSocket, client_id: str):
-    await screen_manager.connect_viewer(websocket, client_id)
+    print(f"[SCREEN VIEW] Solicitud de conexión para client_id: {client_id}")
     try:
+        await websocket.accept()
+        print(f"[SCREEN VIEW] Conexión aceptada para client_id: {client_id}")
+        await screen_manager.connect_viewer(websocket, client_id)
+        print(f"[SCREEN VIEW] Viewer conectado para client_id: {client_id}")
+        
         while True:
             try:
-                await websocket.receive_text()
+                msg = await websocket.receive_text()
             except:
                 pass
     except WebSocketDisconnect:
+        print(f"[SCREEN VIEW] WebSocketDisconnect para client_id: {client_id}")
         screen_manager.disconnect_viewer(websocket, client_id)
     except Exception as e:
-        print(f"Screen view error: {e}")
+        print(f"[SCREEN VIEW] Exception para client_id {client_id}: {type(e).__name__}: {e}")
         screen_manager.disconnect_viewer(websocket, client_id)
 
 @app.get("/index.html")
