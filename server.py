@@ -125,6 +125,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 os.makedirs("avatars", exist_ok=True)
 app.mount("/avatars", StaticFiles(directory="avatars"), name="avatars")
 
@@ -3360,9 +3361,14 @@ async def screen_view_endpoint(websocket: WebSocket, client_id: str):
     await screen_manager.connect_viewer(websocket, client_id)
     try:
         while True:
-            # Keep connection open, maybe handle viewer control messages later
-            await websocket.receive_text()
+            try:
+                await websocket.receive_text()
+            except:
+                pass
     except WebSocketDisconnect:
+        screen_manager.disconnect_viewer(websocket, client_id)
+    except Exception as e:
+        print(f"Screen view error: {e}")
         screen_manager.disconnect_viewer(websocket, client_id)
 
 @app.get("/index.html")
