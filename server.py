@@ -155,6 +155,48 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+# ----------------- SCREEN SHARE -----------------
+class ScreenShareManager:
+    def __init__(self):
+        # Map client_id -> list of viewer websockets
+        self.viewers: dict[str, list[WebSocket]] = {}
+        # Map client_id -> host websocket (optional)
+        self.hosts: dict[str, WebSocket] = {}
+
+    async def connect_viewer(self, websocket: WebSocket, client_id: str):
+        await websocket.accept()
+        if client_id not in self.viewers:
+            self.viewers[client_id] = []
+        self.viewers[client_id].append(websocket)
+
+    def disconnect_viewer(self, websocket: WebSocket, client_id: str):
+        if client_id in self.viewers:
+            if websocket in self.viewers[client_id]:
+                self.viewers[client_id].remove(websocket)
+
+    async def connect_host(self, websocket: WebSocket, client_id: str):
+        await websocket.accept()
+        self.hosts[client_id] = websocket
+
+    def disconnect_host(self, client_id: str):
+        if client_id in self.hosts:
+            del self.hosts[client_id]
+
+    async def broadcast_frame(self, client_id: str, frame_data: bytes):
+        if client_id in self.viewers:
+            to_remove = []
+            for viewer in self.viewers[client_id]:
+                try:
+                    await viewer.send_bytes(frame_data)
+                except:
+                    to_remove.append(viewer)
+            
+            for viewer in to_remove:
+                if viewer in self.viewers[client_id]:
+                    self.viewers[client_id].remove(viewer)
+
+screen_manager = ScreenShareManager()
+
 # ----------------- DB -----------------
 DB_FILE = "oxcy_auth.db"
 
@@ -3297,6 +3339,31 @@ async def get_admin_user_locations(owner_id: str, secret: str):
     except Exception as e:
         return {"success": False, "message": str(e)}
 
+
+# ----------------- SCREEN SHARE ENDPOINTS -----------------
+@app.websocket("/api/ws/screen/host/{client_id}")
+async def screen_host_endpoint(websocket: WebSocket, client_id: str):
+    await screen_manager.connect_host(websocket, client_id)
+    try:
+        while True:
+            # Expecting binary frame data
+            data = await websocket.receive_bytes()
+            await screen_manager.broadcast_frame(client_id, data)
+    except WebSocketDisconnect:
+        screen_manager.disconnect_host(client_id)
+    except Exception as e:
+        print(f"Screen host error: {e}")
+        screen_manager.disconnect_host(client_id)
+
+@app.websocket("/api/ws/screen/view/{client_id}")
+async def screen_view_endpoint(websocket: WebSocket, client_id: str):
+    await screen_manager.connect_viewer(websocket, client_id)
+    try:
+        while True:
+            # Keep connection open, maybe handle viewer control messages later
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        screen_manager.disconnect_viewer(websocket, client_id)
 
 @app.get("/index.html")
 @app.get("/")
