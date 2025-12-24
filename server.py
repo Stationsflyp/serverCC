@@ -159,13 +159,12 @@ class ScreenShareManager:
     def __init__(self):
         self.viewers: dict[str, list[WebSocket]] = {}
 
-    async def connect_viewer(self, websocket: WebSocket, client_id: str):
-        await websocket.accept()
+    def add_viewer(self, websocket: WebSocket, client_id: str):
         if client_id not in self.viewers:
             self.viewers[client_id] = []
         self.viewers[client_id].append(websocket)
 
-    def disconnect_viewer(self, websocket: WebSocket, client_id: str):
+    def remove_viewer(self, websocket: WebSocket, client_id: str):
         if client_id in self.viewers:
             if websocket in self.viewers[client_id]:
                 self.viewers[client_id].remove(websocket)
@@ -3378,17 +3377,18 @@ async def upload_screen_frame(client_id: str, request: Request):
 
 @app.websocket("/api/ws/screen/view/{client_id}")
 async def screen_view_endpoint(websocket: WebSocket, client_id: str):
-    print(f"[SCREEN VIEW] Conexión WebSocket para client_id: {client_id}")
-    await screen_manager.connect_viewer(websocket, client_id)
+    await websocket.accept()
+    print(f"[SCREEN VIEW] ✅ Conectado client_id: {client_id}")
+    screen_manager.add_viewer(websocket, client_id)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        screen_manager.disconnect_viewer(websocket, client_id)
-        print(f"[SCREEN VIEW] Desconexión para client_id: {client_id}")
+        screen_manager.remove_viewer(websocket, client_id)
+        print(f"[SCREEN VIEW] Desconexión client_id: {client_id}")
     except Exception as e:
-        screen_manager.disconnect_viewer(websocket, client_id)
-        print(f"[SCREEN VIEW] Error: {e}")
+        screen_manager.remove_viewer(websocket, client_id)
+        print(f"[SCREEN VIEW] Error {client_id}: {e}")
 
 @app.get("/index.html")
 @app.get("/")
