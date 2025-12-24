@@ -119,10 +119,7 @@ class GenerateLicenseRequest(BaseModel):
 # ----------------- CORS -----------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://authshield.netlify.app",
-        "https://questions-segment-mortgages-duncan.trycloudflare.com",
-    ],
+    allow_origin_regex=r"https://.*netlify\.app|https://.*trycloudflare\.com|http://localhost.*|http://127\.0\.0\.1.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
