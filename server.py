@@ -552,7 +552,7 @@ def gen_session():
     return secrets.token_urlsafe(32)
 
 def gen_license():
-    return "AuthGuard-" + secrets.token_hex(8).upper()
+    return "AUTHGUARD-" + secrets.token_hex(8).upper()
 
 def gen_owner_id():
     return secrets.token_hex(5).upper()
@@ -1128,14 +1128,14 @@ def discord_callback(data: DiscordCallbackRequest):
                     whitelist_entry = cur.fetchone()
                     
                     if not whitelist_entry:
-                        error_msg = f"❌ Tu Discord ID ({discord_id_str}) no está autorizado para acceder a esta aplicación. Solo usuarios seleccionados pueden ingresar."
+                        error_msg = f"❌ Your Discord ID ({discord_id_str}) is not authorized to access this application. Only selected users are allowed."
                         print(f"[Discord OAuth] Whitelist check failed for Discord ID: {discord_id_str}")
                         if con:
                             con.close()
                         return {"success": False, "message": error_msg}
                     print(f"[Discord OAuth] Discord ID {discord_id_str} is whitelisted ✓")
                 else:
-                    error_msg = f"❌ Tu Discord ID ({discord_id_str}) no está autorizado para acceder a esta aplicación. Solo usuarios seleccionados pueden ingresar."
+                    error_msg = f"❌ Your Discord ID ({discord_id_str}) is not authorized to access this application. Only selected users are allowed."
                     print(f"[Discord OAuth] Owner not found, whitelist check failed for Discord ID: {discord_id_str}")
                     if con:
                         con.close()
@@ -1143,7 +1143,7 @@ def discord_callback(data: DiscordCallbackRequest):
             elif WHITELIST_DISCORD_IDS:
                 whitelist = [uid.strip() for uid in WHITELIST_DISCORD_IDS.split(",")]
                 if discord_id_str not in whitelist:
-                    error_msg = f"❌ Tu Discord ID ({discord_id_str}) no está autorizado para acceder a esta aplicación. Solo usuarios seleccionados pueden ingresar."
+                    error_msg = f"❌ Your Discord ID ({discord_id_str}) is not authorized to access this application. Only selected users are allowed."
                     print(f"[Discord OAuth] Whitelist check failed for Discord ID: {discord_id_str}")
                     if con:
                         con.close()
@@ -2045,6 +2045,27 @@ def client_pause_all_users(data: ClientRequest):
         paused = cur.rowcount
         con.commit()
         return {"success": True, "message": f"Paused {paused} users", "count": paused}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        if con:
+            con.close()
+
+@app.post("/api/client/unpause_all_users")
+def client_unpause_all_users(data: ClientRequest):
+    is_valid, auth_result = verify_client(data.owner_id, data.secret)
+    if not is_valid:
+        return {"success": False, "message": "Acceso denegado"}
+    
+    con = None
+    try:
+        con = db()
+        cur = con.cursor()
+        
+        cur.execute("UPDATE users SET force_logout=0 WHERE owner_id=? AND is_admin=0", (data.owner_id,))
+        unpaused = cur.rowcount
+        con.commit()
+        return {"success": True, "message": f"Unpaused {unpaused} users", "count": unpaused}
     except Exception as e:
         return {"success": False, "message": str(e)}
     finally:
